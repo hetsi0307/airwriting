@@ -3,153 +3,194 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Air Writing - JavaScript</title>
-    <!-- Load MediaPipe Libraries -->
+    <title>AI Air Writer Pro</title>
+    <!-- MediaPipe Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     
     <style>
-        body { margin: 0; padding: 0; overflow: hidden; background: #222; font-family: sans-serif; }
-        #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+        body { margin: 0; background: #1a1a1a; font-family: 'Segoe UI', sans-serif; color: white; overflow: hidden; }
+        #container { position: relative; width: 100vw; height: 100vh; }
         
-        /* Mirror the video and canvas for a selfie-view experience */
-        #input_video { transform: scaleX(-1); position: absolute; width: 100%; height: 100%; object-fit: cover; }
-        #output_canvas { transform: scaleX(-1); position: absolute; width: 100%; height: 100%; object-fit: cover; }
-        
-        #controls {
-            position: absolute; top: 20px; left: 20px; z-index: 10;
-            background: rgba(0, 0, 0, 0.7); color: white; padding: 15px; border-radius: 10px;
+        /* Mirroring the view for natural interaction */
+        video, #drawing_canvas, #ui_canvas {
+            position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);
         }
-        .status { font-weight: bold; color: #00ff00; }
+
+        /* Overlay Text (FPS and Gestures) */
+        #info-overlay {
+            position: absolute; top: 20px; left: 20px; z-index: 100;
+            background: rgba(0,0,0,0.6); padding: 15px; border-radius: 8px; pointer-events: none;
+        }
+        .data-line { font-family: monospace; font-size: 1.2rem; margin-bottom: 5px; }
+        .val { color: #00ffcc; font-weight: bold; }
+
+        /* Color Toolbar */
+        #toolbar {
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            z-index: 100; background: rgba(255,255,255,0.1); backdrop-filter: blur(10px);
+            padding: 10px 20px; border-radius: 50px; display: flex; gap: 15px; align-items: center;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .color-btn {
+            width: 35px; height: 35px; border-radius: 50%; border: 2px solid white; cursor: pointer; transition: 0.2s;
+        }
+        .color-btn:hover { transform: scale(1.2); }
+        .color-btn.active { border: 4px solid #fff; box-shadow: 0 0 15px rgba(255,255,255,0.5); }
+        
+        button#clear {
+            background: #ff4757; color: white; border: none; padding: 8px 20px; 
+            border-radius: 20px; cursor: pointer; font-weight: bold;
+        }
     </style>
 </head>
 <body>
 
     <div id="container">
         <video id="input_video"></video>
-        <canvas id="output_canvas"></canvas>
+        <!-- Layer 1: The permanent ink -->
+        <canvas id="drawing_canvas"></canvas>
+        <!-- Layer 2: Hand skeleton and text UI -->
+        <canvas id="ui_canvas"></canvas>
 
-        <div id="controls">
-            <h2>AI Air Writing</h2>
-            <p>☝️ <b>1 Finger:</b> Draw (Red)</p>
-            <p>✌️ <b>2 Fingers:</b> Move (Selection Mode)</p>
-            <p>🖐️ <b>Full Palm:</b> Eraser</p>
-            <button onclick="clearCanvas()">Clear Screen</button>
-            <p>Status: <span id="mode" class="status">Initializing...</span></p>
+        <div id="info-overlay">
+            <div class="data-line">FPS: <span id="fps_val" class="val">0</span></div>
+            <div class="data-line">Gesture: <span id="gesture_val" class="val">Detecting...</span></div>
+            <div class="data-line">Mode: <span id="mode_val" class="val">Initializing</span></div>
+        </div>
+
+        <div id="toolbar">
+            <div class="color-btn active" style="background: #ff0000;" onclick="changeColor('#ff0000', this)"></div>
+            <div class="color-btn" style="background: #00ff00;" onclick="changeColor('#00ff00', this)"></div>
+            <div class="color-btn" style="background: #0077ff;" onclick="changeColor('#0077ff', this)"></div>
+            <div class="color-btn" style="background: #ffff00;" onclick="changeColor('#ffff00', this)"></div>
+            <div class="color-btn" style="background: #ff00ff;" onclick="changeColor('#ff00ff', this)"></div>
+            <div style="width: 2px; height: 30px; background: rgba(255,255,255,0.3);"></div>
+            <button id="clear" onclick="clearCanvas()">CLEAR ALL</button>
         </div>
     </div>
 
     <script>
         const videoElement = document.getElementById('input_video');
-        const canvasElement = document.getElementById('output_canvas');
-        const canvasCtx = canvasElement.getContext('2d');
-        const modeStatus = document.getElementById('mode');
+        const drawingCanvas = document.getElementById('drawing_canvas');
+        const uiCanvas = document.getElementById('ui_canvas');
+        
+        const drawCtx = drawingCanvas.getContext('2d');
+        const uiCtx = uiCanvas.getContext('2d');
 
-        let lastX = 0;
-        let lastY = 0;
+        const fpsDisplay = document.getElementById('fps_val');
+        const gestureDisplay = document.getElementById('gesture_val');
+        const modeDisplay = document.getElementById('mode_val');
+
+        let currentColor = '#ff0000';
+        let lastX = 0, lastY = 0;
         let isDrawing = false;
+        
+        // FPS calculation
+        let lastTimestamp = 0;
 
-        // Persistent drawing layer
-        const drawCanvas = document.createElement('canvas');
-        const drawCtx = drawCanvas.getContext('2d');
-
-        function onResults(results) {
-            // Match canvas size to video size
-            if (drawCanvas.width !== canvasElement.width) {
-                drawCanvas.width = canvasElement.width = videoElement.videoWidth;
-                drawCanvas.height = canvasElement.height = videoElement.videoHeight;
-            }
-
-            // Clear the view canvas (the one that shows the video)
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                const landmarks = results.multiHandLandmarks[0];
-                
-                // Finger tip indices: Index (8), Middle (12), Ring (16), Pinky (20)
-                const indexTip = landmarks[8];
-                const middleTip = landmarks[12];
-                const ringTip = landmarks[16];
-                const pinkyTip = landmarks[20];
-
-                const x = indexTip.x * canvasElement.width;
-                const y = indexTip.y * canvasElement.height;
-
-                // Gesture Logic:
-                const isIndexUp = indexTip.y < landmarks[6].y;
-                const isMiddleUp = middleTip.y < landmarks[10].y;
-                const isRingUp = ringTip.y < landmarks[14].y;
-                const isPinkyUp = pinkyTip.y < landmarks[18].y;
-
-                // 1. ERASER MODE (All fingers up)
-                if (isIndexUp && isMiddleUp && isRingUp && isPinkyUp) {
-                    modeStatus.innerText = "ERASER";
-                    drawCtx.globalCompositeOperation = 'destination-out';
-                    drawCtx.lineWidth = 50;
-                    drawCircle(drawCtx, x, y, 25);
-                    if (isDrawing) {
-                        drawLine(drawCtx, lastX, lastY, x, y);
-                    }
-                    isDrawing = true;
-                }
-                // 2. SELECTION MODE (Index and Middle up) - Just hover
-                else if (isIndexUp && isMiddleUp) {
-                    modeStatus.innerText = "HOVER / SELECT";
-                    isDrawing = false; // Stop drawing
-                    // Draw a pointer circle
-                    canvasCtx.fillStyle = "white";
-                    canvasCtx.beginPath();
-                    canvasCtx.arc(x, y, 10, 0, 2 * Math.PI);
-                    canvasCtx.fill();
-                } 
-                // 3. DRAWING MODE (Only Index up)
-                else if (isIndexUp) {
-                    modeStatus.innerText = "DRAWING";
-                    drawCtx.globalCompositeOperation = 'source-over';
-                    drawCtx.strokeStyle = "red";
-                    drawCtx.lineWidth = 5;
-                    drawCtx.lineCap = "round";
-
-                    if (isDrawing) {
-                        drawLine(drawCtx, lastX, lastY, x, y);
-                    }
-                    isDrawing = true;
-                } else {
-                    isDrawing = false;
-                }
-
-                lastX = x;
-                lastY = y;
-
-                // Draw hand skeleton (Optional)
-                // drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-            }
-
-            // Overlay the persistent drawing onto the main canvas
-            canvasCtx.drawImage(drawCanvas, 0, 0);
-            canvasCtx.restore();
+        function changeColor(color, el) {
+            currentColor = color;
+            document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
         }
 
-        function drawLine(ctx, x1, y1, x2, y2) {
+        function clearCanvas() {
+            drawCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+        }
+
+        function onResults(results) {
+            // Adjust canvas sizes
+            if (drawingCanvas.width !== videoElement.videoWidth) {
+                drawingCanvas.width = uiCanvas.width = videoElement.videoWidth;
+                drawingCanvas.height = uiCanvas.height = videoElement.videoHeight;
+            }
+
+            // Calculate FPS
+            const now = performance.now();
+            const fps = Math.round(1000 / (now - lastTimestamp));
+            lastTimestamp = now;
+            fpsDisplay.innerText = fps;
+
+            // Clear UI Canvas for this frame
+            uiCtx.clearRect(0, 0, uiCanvas.width, uiCanvas.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    
+                    // --- DRAW TRACKING LINES (The Skeleton) ---
+                    drawConnectors(uiCtx, landmarks, HAND_CONNECTIONS, {color: '#FFFFFF', lineWidth: 4});
+                    drawLandmarks(uiCtx, landmarks, {color: '#FF0000', lineWidth: 1, radius: 4});
+
+                    // Logic for Writing
+                    const indexTip = landmarks[8];
+                    const middleTip = landmarks[12];
+                    const ringTip = landmarks[16];
+                    const pinkyTip = landmarks[20];
+                    const thumbTip = landmarks[4];
+
+                    const x = indexTip.x * drawingCanvas.width;
+                    const y = indexTip.y * drawingCanvas.height;
+
+                    // Finger checking logic
+                    const isIndexUp = indexTip.y < landmarks[6].y;
+                    const isMiddleUp = middleTip.y < landmarks[10].y;
+                    const isRingUp = ringTip.y < landmarks[14].y;
+                    const isPinkyUp = pinkyTip.y < landmarks[18].y;
+
+                    // GESTURE MODES
+                    if (isIndexUp && isMiddleUp && isRingUp && isPinkyUp) {
+                        // ERASER (Open Hand)
+                        gestureDisplay.innerText = "Open Palm";
+                        modeDisplay.innerText = "ERASER";
+                        drawCtx.globalCompositeOperation = 'destination-out';
+                        if (isDrawing) {
+                            drawLine(drawCtx, lastX, lastY, x, y, 60);
+                        }
+                        isDrawing = true;
+                    } 
+                    else if (isIndexUp && isMiddleUp) {
+                        // HOVER (Two fingers)
+                        gestureDisplay.innerText = "Selection";
+                        modeDisplay.innerText = "MOVING";
+                        isDrawing = false;
+                        // Draw cursor on UI layer
+                        uiCtx.beginPath();
+                        uiCtx.strokeStyle = "white";
+                        uiCtx.lineWidth = 2;
+                        uiCtx.arc(x, y, 15, 0, Math.PI * 2);
+                        uiCtx.stroke();
+                    }
+                    else if (isIndexUp) {
+                        // DRAW (One finger)
+                        gestureDisplay.innerText = "Index Up";
+                        modeDisplay.innerText = "WRITING";
+                        drawCtx.globalCompositeOperation = 'source-over';
+                        drawCtx.strokeStyle = currentColor;
+                        if (isDrawing) {
+                            drawLine(drawCtx, lastX, lastY, x, y, 6);
+                        }
+                        isDrawing = true;
+                    } else {
+                        gestureDisplay.innerText = "None";
+                        modeDisplay.innerText = "WAITING";
+                        isDrawing = false;
+                    }
+
+                    lastX = x; lastY = y;
+                }
+            }
+        }
+
+        function drawLine(ctx, x1, y1, x2, y2, weight) {
+            ctx.lineWidth = weight;
+            ctx.lineCap = "round";
             ctx.beginPath();
             ctx.moveTo(x1, y1);
             ctx.lineTo(x2, y2);
             ctx.stroke();
         }
 
-        function drawCircle(ctx, x, y, r) {
-            ctx.beginPath();
-            ctx.arc(x, y, r, 0, 2 * Math.PI);
-            ctx.fill();
-        }
-
-        function clearCanvas() {
-            drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-        }
-
-        // Initialize MediaPipe Hands
         const hands = new Hands({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
         });
@@ -157,26 +198,25 @@
         hands.setOptions({
             maxNumHands: 1,
             modelComplexity: 1,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
         });
 
         hands.onResults(onResults);
 
-        // Setup Camera
-        async function startCamera() {
+        async function start() {
             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             videoElement.srcObject = stream;
             videoElement.play();
             
-            async function detectionLoop() {
+            async function detection() {
                 await hands.send({image: videoElement});
-                requestAnimationFrame(detectionLoop);
+                requestAnimationFrame(detection);
             }
-            detectionLoop();
+            detection();
         }
 
-        startCamera();
+        start();
     </script>
 </body>
 </html>
