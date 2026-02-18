@@ -3,46 +3,62 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Air Writer - Gesture Controlled</title>
+    <title>Hand Gesture Recognition - Air Writing</title>
+    
+    <!-- Load MediaPipe Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     
     <style>
-        body { margin: 0; background: #000; font-family: 'Courier New', Courier, monospace; overflow: hidden; }
+        body { margin: 0; background: #000; font-family: Arial, sans-serif; overflow: hidden; }
         #container { position: relative; width: 100vw; height: 100vh; }
         
+        /* Mirroring for natural feel */
         video, canvas {
             position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);
         }
 
+        /* Styling text like the screenshot provided */
         #ui-overlay {
-            position: absolute; top: 100px; left: 20px; z-index: 10;
+            position: absolute; top: 10px; left: 10px; z-index: 10;
             color: white; pointer-events: none;
         }
-        .info-box { background: rgba(0,0,0,0.7); padding: 5px 15px; margin-bottom: 8px; border-left: 5px solid #00ffcc; }
-        .fps { font-size: 28px; font-weight: bold; color: #ff0055; }
+        .info-box { background: rgba(0,0,0,0.5); padding: 2px 10px; margin-bottom: 5px; font-size: 24px; }
+        .fps { font-size: 32px; font-weight: bold; }
 
-        /* Visual indicator for the current color */
-        #active-indicator {
-            position: absolute; top: 20px; right: 20px; width: 60px; height: 60px;
-            border-radius: 50%; border: 4px solid white; z-index: 100;
+        /* Color Bar at the bottom */
+        #toolbar {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            z-index: 20; display: flex; gap: 15px; background: rgba(0,0,0,0.7);
+            padding: 10px 20px; border-radius: 50px; border: 1px solid #444;
         }
+        .color-dot {
+            width: 30px; height: 30px; border-radius: 50%; border: 2px solid white; cursor: pointer;
+        }
+        .active { border: 4px solid #fff; transform: scale(1.1); }
+        #clear-btn { background: red; color: white; border: none; border-radius: 5px; cursor: pointer; padding: 5px 15px; font-weight: bold; }
     </style>
 </head>
 <body>
 
     <div id="container">
         <video id="input_video" playsinline></video>
-        <canvas id="drawing_canvas"></canvas> 
-        <canvas id="ui_canvas"></canvas>      
+        <canvas id="drawing_canvas"></canvas> <!-- For the ink -->
+        <canvas id="ui_canvas"></canvas>      <!-- For the skeleton lines -->
 
         <div id="ui-overlay">
             <div class="info-box fps">FPS: <span id="fps">0</span></div>
-            <div class="info-box">GESTURE: <span id="gesture" style="color:#00ffcc">---</span></div>
-            <div class="info-box">MODE: <span id="mode" style="color:#ffff00">---</span></div>
+            <div class="info-box">Finger Gesture: <span id="gesture" style="color:#00ffcc">Waiting...</span></div>
+            <div class="info-box">MODE: <span id="mode" style="color:#00ffcc">Initialize</span></div>
         </div>
 
-        <div id="active-indicator" style="background: red;"></div>
+        <div id="toolbar">
+            <div class="color-dot active" style="background: red;" onclick="setColor('red', this)"></div>
+            <div class="color-dot" style="background: #00ff00;" onclick="setColor('#00ff00', this)"></div>
+            <div class="color-dot" style="background: #0088ff;" onclick="setColor('#0088ff', this)"></div>
+            <div class="color-dot" style="background: yellow;" onclick="setColor('yellow', this)"></div>
+            <button id="clear-btn" onclick="clearCanvas()">CLEAR</button>
+        </div>
     </div>
 
     <script>
@@ -51,65 +67,50 @@
         const uiCanvas = document.getElementById('ui_canvas');
         const drawCtx = drawingCanvas.getContext('2d');
         const uiCtx = uiCanvas.getContext('2d');
-        const indicator = document.getElementById('active-indicator');
 
         let currentColor = 'red';
         let lastX = 0, lastY = 0;
         let isWriting = false;
         let lastTime = 0;
 
-        // Define Virtual Buttons (Relative to canvas width/height)
-        const buttons = [
-            { name: 'RED', color: 'red', x: 50, y: 20, w: 120, h: 60 },
-            { name: 'GREEN', color: '#00ff00', x: 190, y: 20, w: 120, h: 60 },
-            { name: 'BLUE', color: '#0088ff', x: 330, y: 20, w: 120, h: 60 },
-            { name: 'YELLOW', color: 'yellow', x: 470, y: 20, w: 120, h: 60 },
-            { name: 'CLEAR', color: 'white', x: 610, y: 20, w: 120, h: 60 }
-        ];
+        function setColor(color, el) {
+            currentColor = color;
+            document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('active'));
+            el.classList.add('active');
+        }
 
-        function drawUIButtons() {
-            buttons.forEach(btn => {
-                // Draw Box
-                uiCtx.fillStyle = (btn.name === 'CLEAR') ? '#ff4444' : btn.color;
-                uiCtx.globalAlpha = 0.8;
-                uiCtx.fillRect(btn.x, btn.y, btn.w, btn.h);
-                
-                // Draw Text
-                uiCtx.globalAlpha = 1.0;
-                uiCtx.fillStyle = 'black';
-                uiCtx.font = 'bold 20px Arial';
-                uiCtx.textAlign = 'center';
-                uiCtx.fillText(btn.name, btn.x + btn.w/2, btn.y + 38);
-            });
+        function clearCanvas() {
+            drawCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
         }
 
         function onResults(results) {
+            // Adjust canvas size to match video
             if (drawingCanvas.width !== videoElement.videoWidth) {
                 drawingCanvas.width = uiCanvas.width = videoElement.videoWidth;
                 drawingCanvas.height = uiCanvas.height = videoElement.videoHeight;
             }
 
+            // Calculate FPS
             const now = performance.now();
             document.getElementById('fps').innerText = Math.round(1000 / (now - lastTime));
             lastTime = now;
 
+            // Clear the skeleton layer every frame
             uiCtx.clearRect(0, 0, uiCanvas.width, uiCanvas.height);
-            drawUIButtons(); // Draw the virtual buttons on every frame
 
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                 const landmarks = results.multiHandLandmarks[0];
 
-                // Draw Hand Skeleton
+                // 1. Draw the Skeleton (Lines and Dots)
                 drawConnectors(uiCtx, landmarks, HAND_CONNECTIONS, {color: '#FFFFFF', lineWidth: 3});
                 drawLandmarks(uiCtx, landmarks, {color: '#FF0000', lineWidth: 1, radius: 4});
 
+                // 2. Identify Finger Status
                 const indexTip = landmarks[8];
                 const middleTip = landmarks[12];
                 const ringTip = landmarks[16];
                 const pinkyTip = landmarks[20];
 
-                // Note: Landmarks are mirrored, but our canvas is also mirrored. 
-                // So indexTip.x * width works correctly.
                 const x = indexTip.x * drawingCanvas.width;
                 const y = indexTip.y * drawingCanvas.height;
 
@@ -118,73 +119,50 @@
                 const isRingUp = ringTip.y < landmarks[14].y;
                 const isPinkyUp = pinkyTip.y < landmarks[18].y;
 
-                // --- GESTURE LOGIC ---
-
-                // 1. ERASER (Open Hand)
+                // 3. Logic for Writing / Erasing
                 if (isIndexUp && isMiddleUp && isRingUp && isPinkyUp) {
-                    document.getElementById('gesture').innerText = "Open Palm";
-                    document.getElementById('mode').innerText = "ERASER";
-                    drawCtx.globalCompositeOperation = 'destination-out';
+                    // All fingers up = ERASER
+                    document.getElementById('gesture').innerText = "Stop/Eraser";
+                    document.getElementById('mode').innerText = "ERASING";
+                    drawCtx.globalCompositeOperation = 'destination-out'; // Act as eraser
                     if (isWriting) {
-                        drawLine(drawCtx, lastX, lastY, x, y, 60);
+                        drawCtx.lineWidth = 60;
+                        drawCtx.beginPath();
+                        drawCtx.moveTo(lastX, lastY);
+                        drawCtx.lineTo(x, y);
+                        drawCtx.stroke();
                     }
                     isWriting = true;
                 } 
-                // 2. SELECTION / COLOR CHANGE (Two fingers)
                 else if (isIndexUp && isMiddleUp) {
-                    document.getElementById('gesture').innerText = "Selection";
-                    document.getElementById('mode').innerText = "HOVERING";
+                    // Two fingers up = Selection (Just move, don't draw)
+                    document.getElementById('gesture').innerText = "Move/Hover";
+                    document.getElementById('mode').innerText = "SELECTING";
                     isWriting = false;
-
-                    // Draw a selector circle
-                    uiCtx.beginPath();
-                    uiCtx.strokeStyle = "white";
-                    uiCtx.lineWidth = 4;
-                    uiCtx.arc(x, y, 20, 0, Math.PI * 2);
-                    uiCtx.stroke();
-
-                    // Check if selector is over a virtual button
-                    buttons.forEach(btn => {
-                        // Because video is mirrored, we check distance carefully
-                        if (x > btn.x && x < btn.x + btn.w && y > btn.y && y < btn.y + btn.h) {
-                            if (btn.name === 'CLEAR') {
-                                drawCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
-                            } else {
-                                currentColor = btn.color;
-                                indicator.style.background = currentColor;
-                            }
-                            // Visual feedback on button hover
-                            uiCtx.strokeStyle = "white";
-                            uiCtx.lineWidth = 5;
-                            uiCtx.strokeRect(btn.x, btn.y, btn.w, btn.h);
-                        }
-                    });
                 }
-                // 3. WRITING (One finger)
                 else if (isIndexUp) {
-                    document.getElementById('gesture').innerText = "Index Up";
-                    document.getElementById('mode').innerText = "WRITING";
-                    drawCtx.globalCompositeOperation = 'source-over';
+                    // Only index up = DRAWING
+                    document.getElementById('gesture').innerText = "Writing";
+                    document.getElementById('mode').innerText = "DRAWING";
+                    drawCtx.globalCompositeOperation = 'source-over'; // Act as pen
                     drawCtx.strokeStyle = currentColor;
+                    drawCtx.lineWidth = 7;
+                    drawCtx.lineCap = 'round';
+
                     if (isWriting) {
-                        drawLine(drawCtx, lastX, lastY, x, y, 8);
+                        drawCtx.beginPath();
+                        drawCtx.moveTo(lastX, lastY);
+                        drawCtx.lineTo(x, y);
+                        drawCtx.stroke();
                     }
                     isWriting = true;
                 } else {
+                    document.getElementById('gesture').innerText = "None";
                     isWriting = false;
                 }
 
                 lastX = x; lastY = y;
             }
-        }
-
-        function drawLine(ctx, x1, y1, x2, y2, weight) {
-            ctx.lineWidth = weight;
-            ctx.lineCap = "round";
-            ctx.beginPath();
-            ctx.moveTo(x1, y1);
-            ctx.lineTo(x2, y2);
-            ctx.stroke();
         }
 
         const hands = new Hands({
@@ -194,22 +172,28 @@
         hands.setOptions({
             maxNumHands: 1,
             modelComplexity: 1,
-            minDetectionConfidence: 0.8,
-            minTrackingConfidence: 0.8
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
         });
 
         hands.onResults(onResults);
 
         async function init() {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-            videoElement.srcObject = stream;
-            videoElement.play();
-            async function loop() {
-                await hands.send({image: videoElement});
-                requestAnimationFrame(loop);
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                videoElement.srcObject = stream;
+                videoElement.play();
+                
+                async function loop() {
+                    await hands.send({image: videoElement});
+                    requestAnimationFrame(loop);
+                }
+                loop();
+            } catch (err) {
+                alert("Camera Error: Please allow camera access and use HTTPS.");
             }
-            loop();
         }
+
         init();
     </script>
 </body>
